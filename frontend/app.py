@@ -29,6 +29,7 @@ from qc_engine.synchro_export import (
     export_synchro_volumes,
     identify_peak_hour,
 )
+from scripts.merge_folders import _read_map, merge_to_zip
 
 # ── page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -481,7 +482,7 @@ def _render_intersection_review(
 st.sidebar.title("🚦 Signal Detector QC AI")
 page = st.sidebar.radio(
     "Workflow",
-    ["Single Intersection", "Network Review", "AI Assistant"],
+    ["Single Intersection", "Network Review", "Folder Organizer", "AI Assistant"],
     index=0,
 )
 ai_available = bool(os.getenv("ANTHROPIC_API_KEY"))
@@ -549,6 +550,176 @@ if page == "Single Intersection":
             bad_dets_key="si_bad_detectors",
             intersection_id=st.session_state.si_id,
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Page: Folder Organizer
+# ══════════════════════════════════════════════════════════════════════════════
+
+elif page == "Folder Organizer":
+    st.title("📁 Folder Organizer")
+    st.markdown(
+        "Merge **April** and **October** volume files for each intersection into one "
+        "organised folder, keyed by `{Synchro_ID}_{KITS_ID}`. "
+        "The Synchro ID is taken from your April mapping. "
+        "Download everything as a ZIP ready to drop into your project."
+    )
+
+    # ── Expected file naming ──────────────────────────────────────────────────
+    with st.expander("📋 Expected file naming convention", expanded=False):
+        st.markdown(
+            """
+| File type | Naming pattern | Example |
+|---|---|---|
+| April volume | `{KITS_ID}_{date}.xlsx` | `1001_2024-04-02.xlsx` |
+| October volume | `{KITS_ID}_{date}.xlsx` | `1001_2024-10-01.xlsx` |
+| Detector dictionary | `{KITS_ID}.xlsx` | `1001.xlsx` |
+| Intersection map | any name | `intersection_map.csv` |
+
+**Intersection map columns:** `KITS_ID` · `Synchro_ID`
+
+**Output folder per intersection:** `{Synchro_ID}_{KITS_ID}/`
+```
+500_1001/
+├── 1001_dict.xlsx
+├── 1001_2024-04-02.xlsx
+├── 1001_2024-04-03.xlsx
+├── 1001_2024-10-01.xlsx
+└── 1001_2024-10-07.xlsx
+```
+            """
+        )
+
+    # ── Upload section ────────────────────────────────────────────────────────
+    c1, c2 = st.columns(2)
+    with c1:
+        map_up = st.file_uploader(
+            "Intersection map  (KITS_ID · Synchro_ID)",
+            type=["xlsx", "xls", "csv"],
+            key="fo_map",
+        )
+    with c2:
+        dict_ups = st.file_uploader(
+            "Detector dictionary files  (one per intersection, named `{KITS_ID}.xlsx`)",
+            type=["xlsx", "xls", "csv"],
+            accept_multiple_files=True,
+            key="fo_dicts",
+        )
+
+    c3, c4 = st.columns(2)
+    with c3:
+        april_ups = st.file_uploader(
+            "April volume files  (`{KITS_ID}_{date}.xlsx`)",
+            type=["xlsx", "xls", "csv"],
+            accept_multiple_files=True,
+            key="fo_april",
+        )
+    with c4:
+        oct_ups = st.file_uploader(
+            "October volume files  (`{KITS_ID}_{date}.xlsx`)",
+            type=["xlsx", "xls", "csv"],
+            accept_multiple_files=True,
+            key="fo_oct",
+        )
+
+    have_inputs = map_up and (april_ups or oct_ups) and dict_ups
+
+    if have_inputs and st.button("🗂 Organise & Build ZIP", type="primary"):
+        with st.spinner("Organising files…"):
+            try:
+                # Parse intersection map
+                int_map = _read_map(map_up)
+
+                # Build in-memory file dicts: {filename: bytes}
+                april_files = {up.name: up.read() for up in (april_ups or [])}
+                oct_files   = {up.name: up.read() for up in (oct_ups   or [])}
+                dict_files  = {up.name: up.read() for up in (dict_ups  or [])}
+
+                zip_bytes = merge_to_zip(
+                    april_files=april_files,
+                    october_files=oct_files,
+                    dict_files=dict_files,
+                    intersection_map_df=int_map,
+                )
+
+                # Preview what was organised
+                import zipfile as _zf, io as _io
+                with _zf.ZipFile(_io.BytesIO(zip_bytes)) as zf:
+                    names = zf.namelist()
+
+                # Group by folder
+                folders: dict[str, list[str]] = {}
+                for n in sorted(names):
+                    folder, fname = n.split("/", 1)
+                    folders.setdefault(folder, []).append(fname)
+
+                st.success(
+                    f"Organised **{len(folders)}** intersection folder(s) · "
+                    f"**{len(names)}** file(s) total"
+                )
+
+                # Preview table
+                preview_rows = []
+                for kits_id, row in int_map.iterrows():
+                    kid = str(row["KITS_ID"])
+                    sid = str(row["Synchro_ID"])
+                    folder_name = f"{sid}_{kid}"
+                    files_in = folders.get(folder_name, [])
+                    n_april  = sum(1 for f in files_in if kid + "_" in f and "dict" not in f
+                                   and any(m in f for m in ["04", "apr", "April"]))
+                    n_oct    = sum(1 for f in files_in if kid + "_" in f and "dict" not in f
+                                   and any(m in f for m in ["10", "oct", "Oct"]))
+                    has_dict = any("dict" in f for f in files_in)
+                    total    = len(files_in)
+                    preview_rows.append({
+                        "Folder": folder_name,
+                        "KITS_ID": kid,
+                        "Synchro_ID": sid,
+                        "Total files": total,
+                        "Dictionary": "✅" if has_dict else "❌",
+                        "Status": "✅" if total > 1 else "⚠ check",
+                    })
+
+                prev_df = pd.DataFrame(preview_rows)
+
+                def _fo_color(row):
+                    return (
+                        ["background-color: #ffe5e5"] * len(row)
+                        if row["Status"] != "✅"
+                        else ["background-color: #f0fdf4"] * len(row)
+                    )
+
+                st.dataframe(
+                    prev_df.style.apply(_fo_color, axis=1),
+                    use_container_width=True,
+                )
+
+                with st.expander("📂 Full file listing"):
+                    for folder_name, flist in sorted(folders.items()):
+                        st.markdown(f"**{folder_name}/**")
+                        for f in sorted(flist):
+                            st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;`{f}`", unsafe_allow_html=True)
+
+                st.download_button(
+                    "⬇ Download organised ZIP",
+                    data=zip_bytes,
+                    file_name="organised_intersections.zip",
+                    mime="application/zip",
+                )
+
+            except ValueError as exc:
+                st.error(str(exc))
+            except Exception as exc:
+                st.error(f"Unexpected error: {exc}")
+                raise
+
+    elif not have_inputs and (april_ups or oct_ups or dict_ups or map_up):
+        missing = []
+        if not map_up:       missing.append("intersection map")
+        if not dict_ups:     missing.append("dictionary files")
+        if not april_ups and not oct_ups:
+            missing.append("at least one set of volume files (April or October)")
+        st.warning(f"Still needed: {', '.join(missing)}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
