@@ -29,7 +29,7 @@ from qc_engine.synchro_export import (
     export_synchro_volumes,
     identify_peak_hour,
 )
-from scripts.merge_folders import _read_map, merge_to_zip
+from scripts.merge_folders import read_masterlist, build_from_masterlist
 
 # ── page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -559,153 +559,146 @@ if page == "Single Intersection":
 elif page == "Folder Organizer":
     st.title("📁 Folder Organizer")
     st.markdown(
-        "Merge **April** and **October** volume files for each intersection into one "
-        "organised folder, keyed by `{Synchro_ID}_{KITS_ID}`. "
-        "The Synchro ID is taken from your April mapping. "
-        "Download everything as a ZIP ready to drop into your project."
+        "Upload your **masterlist** and drop in all volume + dictionary files. "
+        "The tool builds one `{Synchro_ID}_{KITS_ID}/` folder per intersection "
+        "and returns a ZIP. Re-run any time the masterlist is updated."
     )
 
-    # ── Expected file naming ──────────────────────────────────────────────────
-    with st.expander("📋 Expected file naming convention", expanded=False):
+    with st.expander("📋 File naming convention", expanded=False):
         st.markdown(
             """
-| File type | Naming pattern | Example |
+| File | Naming | Example |
 |---|---|---|
-| April volume | `{KITS_ID}_{date}.xlsx` | `1001_2024-04-02.xlsx` |
-| October volume | `{KITS_ID}_{date}.xlsx` | `1001_2024-10-01.xlsx` |
-| Detector dictionary | `{KITS_ID}.xlsx` | `1001.xlsx` |
-| Intersection map | any name | `intersection_map.csv` |
+| Masterlist | any name | `masterlist.xlsx` |
+| Volume file | `{KITS_ID}_{date}.xlsx` | `1001_2024-04-02.xlsx` |
+| Dictionary | `{KITS_ID}.xlsx` | `1001.xlsx` |
 
-**Intersection map columns:** `KITS_ID` · `Synchro_ID`
+**Masterlist required columns:** `KITS_ID` · `Synchro_ID`
+(extra columns like Location, Street are kept in the summary but ignored during folder building)
 
-**Output folder per intersection:** `{Synchro_ID}_{KITS_ID}/`
+**Output per intersection:**
 ```
-500_1001/
-├── 1001_dict.xlsx
-├── 1001_2024-04-02.xlsx
-├── 1001_2024-04-03.xlsx
-├── 1001_2024-10-01.xlsx
-└── 1001_2024-10-07.xlsx
+{Synchro_ID}_{KITS_ID}/
+├── {KITS_ID}_dict.xlsx
+├── {KITS_ID}_2024-04-02.xlsx   ← all volume files matched by KITS_ID prefix
+├── {KITS_ID}_2024-04-03.xlsx
+├── {KITS_ID}_2024-10-01.xlsx   ← any period, no April/October distinction
+└── …
 ```
             """
         )
 
-    # ── Upload section ────────────────────────────────────────────────────────
+    # ── Upload ────────────────────────────────────────────────────────────────
+    ml_up = st.file_uploader(
+        "Masterlist  (KITS_ID · Synchro_ID · any extra columns)",
+        type=["xlsx", "xls", "csv"],
+        key="fo_masterlist",
+    )
+
+    # Preview masterlist as soon as it's uploaded
+    if ml_up:
+        try:
+            ml_preview = read_masterlist(ml_up)
+            ml_up.seek(0)  # reset so it can be re-read below
+            st.caption(
+                f"Masterlist: **{len(ml_preview)}** intersections · "
+                f"columns: {', '.join(ml_preview.columns.tolist())}"
+            )
+            with st.expander("Preview masterlist", expanded=False):
+                st.dataframe(ml_preview, use_container_width=True)
+        except ValueError as exc:
+            st.error(str(exc))
+            ml_up = None
+
     c1, c2 = st.columns(2)
     with c1:
-        map_up = st.file_uploader(
-            "Intersection map  (KITS_ID · Synchro_ID)",
+        vol_ups = st.file_uploader(
+            "Volume files — all periods, all intersections  (`{KITS_ID}_{date}.xlsx`)",
             type=["xlsx", "xls", "csv"],
-            key="fo_map",
+            accept_multiple_files=True,
+            key="fo_vols",
         )
     with c2:
         dict_ups = st.file_uploader(
-            "Detector dictionary files  (one per intersection, named `{KITS_ID}.xlsx`)",
+            "Detector dictionary files  (`{KITS_ID}.xlsx`, one per intersection)",
             type=["xlsx", "xls", "csv"],
             accept_multiple_files=True,
             key="fo_dicts",
         )
 
-    c3, c4 = st.columns(2)
-    with c3:
-        april_ups = st.file_uploader(
-            "April volume files  (`{KITS_ID}_{date}.xlsx`)",
-            type=["xlsx", "xls", "csv"],
-            accept_multiple_files=True,
-            key="fo_april",
-        )
-    with c4:
-        oct_ups = st.file_uploader(
-            "October volume files  (`{KITS_ID}_{date}.xlsx`)",
-            type=["xlsx", "xls", "csv"],
-            accept_multiple_files=True,
-            key="fo_oct",
-        )
+    # ── Build ─────────────────────────────────────────────────────────────────
+    have_inputs = ml_up and vol_ups and dict_ups
 
-    have_inputs = map_up and (april_ups or oct_ups) and dict_ups
-
-    if have_inputs and st.button("🗂 Organise & Build ZIP", type="primary"):
-        with st.spinner("Organising files…"):
+    if have_inputs and st.button("🗂 Build Folders & Download ZIP", type="primary"):
+        with st.spinner("Building folders…"):
             try:
-                # Parse intersection map
-                int_map = _read_map(map_up)
+                masterlist   = read_masterlist(ml_up)
+                volume_files = {up.name: up.read() for up in vol_ups}
+                dict_files   = {up.name: up.read() for up in dict_ups}
 
-                # Build in-memory file dicts: {filename: bytes}
-                april_files = {up.name: up.read() for up in (april_ups or [])}
-                oct_files   = {up.name: up.read() for up in (oct_ups   or [])}
-                dict_files  = {up.name: up.read() for up in (dict_ups  or [])}
-
-                zip_bytes = merge_to_zip(
-                    april_files=april_files,
-                    october_files=oct_files,
-                    dict_files=dict_files,
-                    intersection_map_df=int_map,
+                zip_bytes, summary_df = build_from_masterlist(
+                    masterlist   = masterlist,
+                    volume_files = volume_files,
+                    dict_files   = dict_files,
                 )
 
-                # Preview what was organised
-                import zipfile as _zf, io as _io
-                with _zf.ZipFile(_io.BytesIO(zip_bytes)) as zf:
-                    names = zf.namelist()
+                n_complete   = (summary_df["Missing"] == "").sum()
+                n_incomplete = (summary_df["Missing"] != "").sum()
+                total_files  = summary_df["Volume files"].sum()
 
-                # Group by folder
-                folders: dict[str, list[str]] = {}
-                for n in sorted(names):
-                    folder, fname = n.split("/", 1)
-                    folders.setdefault(folder, []).append(fname)
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Intersections", len(summary_df))
+                col2.metric("✅ Complete",    int(n_complete))
+                col3.metric("⚠ Incomplete",  int(n_incomplete))
 
-                st.success(
-                    f"Organised **{len(folders)}** intersection folder(s) · "
-                    f"**{len(names)}** file(s) total"
-                )
-
-                # Preview table
-                preview_rows = []
-                for kits_id, row in int_map.iterrows():
-                    kid = str(row["KITS_ID"])
-                    sid = str(row["Synchro_ID"])
-                    folder_name = f"{sid}_{kid}"
-                    files_in = folders.get(folder_name, [])
-                    n_april  = sum(1 for f in files_in if kid + "_" in f and "dict" not in f
-                                   and any(m in f for m in ["04", "apr", "April"]))
-                    n_oct    = sum(1 for f in files_in if kid + "_" in f and "dict" not in f
-                                   and any(m in f for m in ["10", "oct", "Oct"]))
-                    has_dict = any("dict" in f for f in files_in)
-                    total    = len(files_in)
-                    preview_rows.append({
-                        "Folder": folder_name,
-                        "KITS_ID": kid,
-                        "Synchro_ID": sid,
-                        "Total files": total,
-                        "Dictionary": "✅" if has_dict else "❌",
-                        "Status": "✅" if total > 1 else "⚠ check",
-                    })
-
-                prev_df = pd.DataFrame(preview_rows)
-
+                # Colour-coded summary table
                 def _fo_color(row):
-                    return (
-                        ["background-color: #ffe5e5"] * len(row)
-                        if row["Status"] != "✅"
-                        else ["background-color: #f0fdf4"] * len(row)
-                    )
+                    if row["Missing"]:
+                        return ["background-color: #fff8e1"] * len(row)
+                    return ["background-color: #f0fdf4"] * len(row)
 
+                # Choose which columns to show (always show key ones first)
+                show_cols = ["Folder", "Synchro_ID", "KITS_ID",
+                             "Volume files", "Dictionary", "Missing"]
+                extra_cols = [c for c in summary_df.columns if c not in show_cols]
                 st.dataframe(
-                    prev_df.style.apply(_fo_color, axis=1),
+                    summary_df[show_cols + extra_cols].style.apply(_fo_color, axis=1),
                     use_container_width=True,
                 )
 
-                with st.expander("📂 Full file listing"):
-                    for folder_name, flist in sorted(folders.items()):
-                        st.markdown(f"**{folder_name}/**")
+                # Full file listing
+                import zipfile as _zf
+                with _zf.ZipFile(io.BytesIO(zip_bytes)) as zf:
+                    all_names = sorted(zf.namelist())
+                folders_map: dict[str, list[str]] = {}
+                for n in all_names:
+                    folder, fname = n.split("/", 1)
+                    folders_map.setdefault(folder, []).append(fname)
+
+                with st.expander(f"📂 Full file listing ({len(all_names)} files)"):
+                    for fold, flist in sorted(folders_map.items()):
+                        st.markdown(f"**{fold}/**")
                         for f in sorted(flist):
-                            st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;`{f}`", unsafe_allow_html=True)
+                            st.markdown(
+                                f"&nbsp;&nbsp;&nbsp;&nbsp;`{f}`",
+                                unsafe_allow_html=True,
+                            )
 
                 st.download_button(
-                    "⬇ Download organised ZIP",
+                    f"⬇ Download ZIP  ({len(summary_df)} folders · {int(total_files)} volume files)",
                     data=zip_bytes,
                     file_name="organised_intersections.zip",
                     mime="application/zip",
                 )
+
+                if n_incomplete:
+                    incomplete = summary_df[summary_df["Missing"] != ""][
+                        ["KITS_ID", "Synchro_ID", "Missing"]
+                    ]
+                    st.warning(
+                        f"{int(n_incomplete)} intersection(s) have missing files:"
+                    )
+                    st.dataframe(incomplete, use_container_width=True)
 
             except ValueError as exc:
                 st.error(str(exc))
@@ -713,13 +706,12 @@ elif page == "Folder Organizer":
                 st.error(f"Unexpected error: {exc}")
                 raise
 
-    elif not have_inputs and (april_ups or oct_ups or dict_ups or map_up):
-        missing = []
-        if not map_up:       missing.append("intersection map")
-        if not dict_ups:     missing.append("dictionary files")
-        if not april_ups and not oct_ups:
-            missing.append("at least one set of volume files (April or October)")
-        st.warning(f"Still needed: {', '.join(missing)}")
+    elif (vol_ups or dict_ups or ml_up) and not have_inputs:
+        needed = []
+        if not ml_up:    needed.append("masterlist")
+        if not vol_ups:  needed.append("volume files")
+        if not dict_ups: needed.append("dictionary files")
+        st.info(f"Still needed: {', '.join(needed)}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
