@@ -56,8 +56,8 @@ import pandas as pd
 
 # ── column detection ──────────────────────────────────────────────────────────
 
-_KITS_ALIASES    = {"kits_id", "kits", "kitsid", "kits id"}
-_SYNCHRO_ALIASES = {"synchro_id", "synchroid", "synchro", "synchro id", "syncid"}
+_KITS_ALIASES    = {"kits_id", "kits", "kitsid", "kits id", "signal_id", "signal id"}
+_SYNCHRO_ALIASES = {"synchro_id", "synchroid", "synchro", "synchro id", "syncid", "no", "no."}
 
 
 def _detect_col(columns: list[str], aliases: set[str]) -> Optional[str]:
@@ -132,6 +132,9 @@ def _stem(name: str) -> str:
     return Path(name).stem
 
 
+_DAY_FOLDERS = {"Weekday", "Saturday", "Sunday"}
+
+
 def _volume_matches(files: dict[str, bytes], kits_id: str) -> list[tuple[str, bytes]]:
     """Files whose stem starts with kits_id + '_'."""
     return [
@@ -139,6 +142,29 @@ def _volume_matches(files: dict[str, bytes], kits_id: str) -> list[tuple[str, by
         for name, data in files.items()
         if _stem(name).startswith(kits_id + "_")
     ]
+
+
+def _intersection_subpath(relative_path: str) -> Path:
+    """Preserve the Weekday/Saturday/Sunday subfolder structure for output."""
+    path = Path(relative_path)
+    for idx, part in enumerate(path.parts):
+        if part in _DAY_FOLDERS:
+            return Path(*path.parts[idx:])
+
+    stem = path.stem
+    suffix_to_folder = {
+        "_weekday": "Weekday",
+        "_saturday": "Saturday",
+        "_sunday": "Sunday",
+        "_sat": "Saturday",
+        "_sun": "Sunday",
+    }
+    stem_lower = stem.casefold()
+    for suffix, folder in suffix_to_folder.items():
+        if stem_lower.endswith(suffix):
+            return Path(folder) / path.name
+
+    return Path(path.name)
 
 
 def _dict_match(files: dict[str, bytes], kits_id: str) -> Optional[tuple[str, bytes]]:
@@ -190,7 +216,8 @@ def build_from_masterlist(
             missing   = []
 
             for name, data in vol_hits:
-                zf.writestr(f"{folder}/{name}", data)
+                subpath = _intersection_subpath(name)
+                zf.writestr(f"{folder}/{subpath.as_posix()}", data)
 
             if dict_hit:
                 orig_name, data = dict_hit
@@ -255,11 +282,11 @@ def build_folders_from_masterlist(
 
     # Load all volume + dict files into memory maps for uniform matching
     vol_exts  = {".xlsx", ".xls", ".csv"}
-    vol_files = {
-        p.name: p.read_bytes()
-        for p in sorted(volumes_dir.iterdir())
-        if p.is_file() and p.suffix.lower() in vol_exts
-    }
+    vol_files = {}
+    for p in sorted(volumes_dir.rglob("*")):
+        if p.is_file() and p.suffix.lower() in vol_exts:
+            rel_path = p.relative_to(volumes_dir)
+            vol_files[str(rel_path)] = p.read_bytes()
     dict_files_map = {
         p.name: p.read_bytes()
         for p in sorted(dict_dir.iterdir())
@@ -279,7 +306,8 @@ def build_folders_from_masterlist(
         missing  = []
 
         for name, data in vol_hits:
-            dst = dest / name
+            dst = dest / _intersection_subpath(name)
+            dst.parent.mkdir(parents=True, exist_ok=True)
             if not dst.exists() or overwrite:
                 dst.write_bytes(data)
 
