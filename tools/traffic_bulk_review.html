@@ -26,7 +26,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--main);color:var(--text);h
 
 /* ── Upload Screen ─────────────────────────────────────────────────────── */
 #uploadScreen{display:flex;align-items:center;justify-content:center;height:100vh;background:var(--main);}
-.up-card{background:var(--card);border-radius:16px;padding:48px;max-width:780px;width:100%;box-shadow:0 4px 24px rgba(0,0,0,.08);}
+.up-card{background:var(--card);border-radius:16px;padding:48px;max-width:920px;width:100%;box-shadow:0 4px 24px rgba(0,0,0,.08);}
 .up-title{font-size:24px;font-weight:700;color:var(--text);margin-bottom:6px;}
 .up-sub{color:var(--muted);font-size:14px;margin-bottom:32px;}
 .up-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;}
@@ -173,6 +173,15 @@ input[type=file]{display:none;}
 .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--muted);gap:10px;text-align:center;}
 .empty-icon{font-size:40px;}
 
+/* ── Synchro comparison table ────────────────────────────────────────────── */
+.syn-table{width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:11px;}
+.syn-table th,.syn-table td{padding:3px 6px;border-bottom:1px solid var(--border);text-align:right;}
+.syn-table th:first-child,.syn-table td:first-child{text-align:left;position:sticky;left:0;background:var(--card);z-index:1;}
+.syn-table th{color:var(--muted);font-weight:700;border-bottom:2px solid var(--border2);background:var(--faint);}
+.syn-table th:first-child{background:var(--faint);}
+.syn-delta{border-radius:3px;padding:1px 4px;font-weight:700;font-size:10px;}
+.sb-syn-badge{font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:3px;display:inline-block;}
+
 /* ── Upload mode tabs ────────────────────────────────────────────────────── */
 .up-mode-tabs{display:flex;margin-bottom:20px;border:1.5px solid var(--border2);border-radius:8px;overflow:hidden;}
 .up-mode-tab{flex:1;background:var(--faint);color:var(--muted);border:none;padding:10px 0;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;transition:all .15s;}
@@ -208,7 +217,7 @@ input[type=file]{display:none;}
 &nbsp;&nbsp;929608030_dict.xlsx
   </div>
 
-  <div class="up-grid">
+  <div class="up-grid" style="grid-template-columns:1fr 1fr">
     <div class="up-panel" id="volPanel" onclick="document.getElementById('volInput').click()">
       <div class="up-icon">📁</div>
       <div class="up-label">Volume Folder</div>
@@ -225,12 +234,23 @@ input[type=file]{display:none;}
       <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();document.getElementById('dictInput').click()">Choose Folder</button>
       <div class="up-status" id="dictStatus"></div>
     </div>
-  </div>
-
-  <div class="up-opts">
-    <label>Survey Year:</label>
-    <input type="number" id="yearInput" value="2026" min="2000" max="2099"/>
-    <span style="font-size:13px;color:var(--muted);">Used to determine weekday/Saturday/Sunday from MM/DD in filenames.</span>
+    <div class="up-panel" style="cursor:default">
+      <div class="up-icon">📅</div>
+      <div class="up-label">Survey Year</div>
+      <div class="up-hint">Used to classify weekday / Saturday / Sunday<br>from MM/DD dates in filenames.</div>
+      <div style="display:flex;align-items:center;justify-content:center;margin-top:12px">
+        <input type="number" id="yearInput" value="2026" min="2000" max="2099"
+          style="width:90px;padding:8px 10px;border:1.5px solid var(--border2);border-radius:8px;font-size:18px;font-family:'JetBrains Mono',monospace;text-align:center"/>
+      </div>
+    </div>
+    <div class="up-panel" id="synchroPanel" onclick="document.getElementById('synchroInput').click()">
+      <div class="up-icon">📊</div>
+      <div class="up-label">Synchro Baseline <span style="font-weight:400;color:var(--muted)">(optional)</span></div>
+      <div class="up-hint">Folder of VOLUME_*.csv files<br>All intersections in each file<br>INTID = seq number (74, 75…)</div>
+      <input type="file" id="synchroInput" webkitdirectory multiple accept=".csv"/>
+      <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();document.getElementById('synchroInput').click()">Select Synchro Folder</button>
+      <div class="up-status" id="synchroStatus"></div>
+    </div>
   </div>
 
   <div class="up-preview" id="matchPreview"></div>
@@ -334,6 +354,13 @@ input[type=file]{display:none;}
       <!-- NOTES PANEL -->
       <div id="notesPanel">
         <div class="np-head">Review</div>
+        <div class="np-section" id="synchroSection" style="display:none">
+          <div class="np-section-title" onclick="toggleSynchroSection()" style="cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:space-between">
+            <span>📊 vs Synchro Baseline</span>
+            <span id="synchroToggleIcon" style="font-size:10px">▾</span>
+          </div>
+          <div id="synchroTableWrap" style="overflow:hidden"></div>
+        </div>
         <div class="np-section" id="detChipSection">
           <div class="np-section-title">Detectors</div>
           <div class="np-chips" id="detChips"></div>
@@ -401,6 +428,9 @@ const G = {
   serverUrl: '',
   projectId: '',
   saveTimer: null,
+  // synchro baseline
+  synchroByIntid: {},
+  synchroLoaded: false,
 };
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -760,6 +790,157 @@ function peakRowsForExport(movementVols, label) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+// SYNCHRO BASELINE
+// ══════════════════════════════════════════════════════════════════════════
+
+const CORE_MOVEMENTS = ['NBL','NBT','NBR','SBL','SBT','SBR','EBL','EBT','EBR','WBL','WBT','WBR'];
+
+const HEADER_ALIASES = {
+  NTH:'NBT', NT:'NBT', NL:'NBL', NR:'NBR',
+  STH:'SBT', ST:'SBT', SL:'SBL', SR:'SBR',
+  ETH:'EBT', ET:'EBT', EL:'EBL', ER:'EBR',
+  WTH:'WBT', WT:'WBT', WL:'WBL', WR:'WBR',
+};
+
+function normalizeSynchroCol(col) {
+  const up = col.trim().replace(/"/g, '').toUpperCase();
+  return HEADER_ALIASES[up] || up;
+}
+
+async function parseSynchroFiles(files) {
+  const result = {};
+  for (const file of files) {
+    if (!file.name.toUpperCase().startsWith('VOLUME_')) continue;
+    const planName = file.name.replace(/^VOLUME_/i, '').replace(/\.csv$/i, '');
+    let text;
+    try { text = await file.text(); } catch(e) { continue; }
+    const lines = text.split(/\r?\n/).filter(l => l.trim());
+    if (lines.length < 4) continue;
+
+    const rawHeaders = lines[2].split(',');
+    const intidIdx = rawHeaders.findIndex(h => h.trim().replace(/"/g,'').toUpperCase() === 'INTID');
+    if (intidIdx < 0) continue;
+
+    const movIdx = {};
+    for (let i = 0; i < rawHeaders.length; i++) {
+      const norm = normalizeSynchroCol(rawHeaders[i]);
+      if (CORE_MOVEMENTS.includes(norm) && !(norm in movIdx)) movIdx[norm] = i;
+    }
+
+    const rowsByIntid = {};
+    for (const line of lines.slice(3)) {
+      if (!line.trim()) continue;
+      const cells = line.split(',');
+      const intid = parseInt(cells[intidIdx]);
+      if (isNaN(intid)) continue;
+      let total = 0;
+      const movements = {};
+      for (const [mov, idx] of Object.entries(movIdx)) {
+        const v = parseFloat(cells[idx]) || 0;
+        movements[mov] = v;
+        total += v;
+      }
+      movements._total = total;
+      (rowsByIntid[intid] ||= []).push(movements);
+    }
+
+    for (const [intid, rows] of Object.entries(rowsByIntid)) {
+      const peak = rows.reduce((b, r) => r._total > b._total ? r : b, rows[0]);
+      const mv = {};
+      for (const m of CORE_MOVEMENTS) mv[m] = peak[m] ?? 0;
+      (result[intid] ||= {})[planName] = mv;
+    }
+  }
+  return result;
+}
+
+function attachSynchroToIntersections() {
+  for (const id of G.sortedIds) {
+    const obj = G.intersections[id];
+    obj.synchroPlans = G.synchroByIntid[obj.seq] || null;
+  }
+}
+
+function getSynchroBaseline(obj, dayType, peak) {
+  if (!obj.synchroPlans) return null;
+  const effDay = (dayType === 'all') ? 'weekday' : dayType;
+  if (effDay === 'weekday') return obj.synchroPlans[peak === 'AM' ? 'AM' : 'PM'] || null;
+  // saturday and sunday both use WE_AM / WE_PM
+  return obj.synchroPlans[peak === 'AM' ? 'WE_AM' : 'WE_PM'] || null;
+}
+
+function computeMaxDiff(obj) {
+  if (!obj.synchroPlans || !obj.loaded) return null;
+  const synAM = obj.synchroPlans.AM;
+  const synPM = obj.synchroPlans.PM;
+  if (!synAM && !synPM) return null;
+  const peaks = computePeaks(obj, 'weekday');
+  let maxDiff = 0;
+  for (const mov of CORE_MOVEMENTS) {
+    if (synAM && synAM[mov] > 0) {
+      maxDiff = Math.max(maxDiff, Math.abs(((peaks[mov]?.am || 0) - synAM[mov]) / synAM[mov] * 100));
+    }
+    if (synPM && synPM[mov] > 0) {
+      maxDiff = Math.max(maxDiff, Math.abs(((peaks[mov]?.pm || 0) - synPM[mov]) / synPM[mov] * 100));
+    }
+  }
+  return maxDiff;
+}
+
+function renderSynchroCompTable(s, dayType) {
+  if (!s.synchroPlans) return '';
+  const peaks = s.loaded ? computePeaks(s, dayType) : null;
+  const synAM = getSynchroBaseline(s, dayType, 'AM');
+  const synPM = getSynchroBaseline(s, dayType, 'PM');
+
+  function fmtDelta(newVal, synVal) {
+    if (!synVal || synVal === 0) return { text: '—', color: '#94a3b8', bg: 'transparent' };
+    const pct = (newVal - synVal) / synVal * 100;
+    const sign = pct >= 0 ? '+' : '';
+    const text = `${sign}${Math.round(pct)}%`;
+    const abs = Math.abs(pct);
+    if (abs <= 15) return { text, color: '#16a34a', bg: '#dcfce7' };
+    if (abs <= 30) return { text, color: '#d97706', bg: '#fef3c7' };
+    return { text, color: '#dc2626', bg: '#fee2e2' };
+  }
+
+  const rows = CORE_MOVEMENTS.map(mov => {
+    const nAM = peaks?.[mov]?.am ?? null;
+    const nPM = peaks?.[mov]?.pm ?? null;
+    const sAM = synAM?.[mov] ?? 0;
+    const sPM = synPM?.[mov] ?? 0;
+    const dAM = nAM !== null ? fmtDelta(nAM, sAM) : { text: '—', color: '#94a3b8', bg: 'transparent' };
+    const dPM = nPM !== null ? fmtDelta(nPM, sPM) : { text: '—', color: '#94a3b8', bg: 'transparent' };
+    return `<tr>
+      <td><b>${mov}</b></td>
+      <td>${nAM !== null ? nAM : '—'}</td>
+      <td>${sAM || '—'}</td>
+      <td><span class="syn-delta" style="color:${dAM.color};background:${dAM.bg}">${dAM.text}</span></td>
+      <td>${nPM !== null ? nPM : '—'}</td>
+      <td>${sPM || '—'}</td>
+      <td><span class="syn-delta" style="color:${dPM.color};background:${dPM.bg}">${dPM.text}</span></td>
+    </tr>`;
+  }).join('');
+
+  return `<div style="max-height:260px;overflow-y:auto;margin-top:4px">
+    <table class="syn-table">
+      <thead><tr>
+        <th>Mvmt</th><th>New AM</th><th>Syn AM</th><th>Δ AM</th>
+        <th>New PM</th><th>Syn PM</th><th>Δ PM</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+let _synchroSectionOpen = true;
+function toggleSynchroSection() {
+  _synchroSectionOpen = !_synchroSectionOpen;
+  document.getElementById('synchroTableWrap').style.display = _synchroSectionOpen ? '' : 'none';
+  document.getElementById('synchroToggleIcon').textContent = _synchroSectionOpen ? '▾' : '▸';
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // UPLOAD HANDLING
 // ══════════════════════════════════════════════════════════════════════════
 
@@ -807,6 +988,35 @@ document.getElementById('dictInput').addEventListener('change', function(e) {
   document.getElementById('dictPanel').classList.add('loaded');
   document.getElementById('dictStatus').textContent = `✓ ${n} dictionary file(s) found`;
   updateMatchPreview();
+});
+
+document.getElementById('synchroInput').addEventListener('change', async function(e) {
+  const files = [...e.target.files].filter(f =>
+    f.name.toUpperCase().startsWith('VOLUME_') && f.name.toLowerCase().endsWith('.csv')
+  );
+  if (!files.length) {
+    document.getElementById('synchroStatus').textContent = 'No VOLUME_*.csv files found';
+    document.getElementById('synchroStatus').className = 'up-status err';
+    return;
+  }
+  document.getElementById('synchroStatus').textContent = 'Parsing…';
+  document.getElementById('synchroStatus').className = 'up-status';
+
+  G.synchroByIntid = await parseSynchroFiles(files);
+  G.synchroLoaded = true;
+
+  const planNames = [...new Set(files.map(f =>
+    f.name.replace(/^VOLUME_/i,'').replace(/\.csv$/i,'')
+  ))].sort();
+  document.getElementById('synchroPanel').classList.add('loaded');
+  document.getElementById('synchroStatus').textContent =
+    `✓ ${files.length} plan file(s) loaded (${planNames.join(' ')})`;
+
+  if (G.sortedIds.length > 0) {
+    attachSynchroToIntersections();
+    const id = currentId();
+    if (id) { renderChartPanel(id); renderNotesPanel(id); renderSidebar(); }
+  }
 });
 
 function updateMatchPreview() {
@@ -870,6 +1080,8 @@ function startApp() {
   G.sortedIds = Object.keys(G.intersections).sort((a,b) =>
     G.intersections[a].seq - G.intersections[b].seq
   );
+
+  if (G.synchroLoaded) attachSynchroToIntersections();
 
   document.getElementById('uploadScreen').style.display = 'none';
   document.getElementById('appScreen').classList.add('visible');
@@ -1021,13 +1233,21 @@ function renderSidebar() {
     const notesLine = s.notes ? `<div class="sb-notes">${esc(s.notes.split('\n')[0])}</div>` : '';
     const hasDict = s.dictFile || s.serverHasDict;
     const dictIcon = hasDict ? '' : '<span style="color:#f59e0b;font-size:10px;margin-left:2px">?</span>';
+    const diffBadge = (() => {
+      if (!s.synchroPlans || !s.loaded) return '';
+      const d = computeMaxDiff(s);
+      if (d === null) return '';
+      if (d > 30) return `<span class="sb-syn-badge" style="background:#fee2e2;color:#dc2626">⚠ >30%</span>`;
+      if (d > 15) return `<span class="sb-syn-badge" style="background:#fef3c7;color:#d97706">~15-30%</span>`;
+      return `<span class="sb-syn-badge" style="background:#dcfce7;color:#16a34a">✓ &lt;15%</span>`;
+    })();
     return `<div class="sb-item${id===curId?' active':''}" onclick="selectFromSidebar('${id}')">
       <div class="sb-item-row1">
         <span class="sb-seq">#${s.seq}</span>
         <span class="sb-kits">${esc(s.kitsId)}${dictIcon}</span>
         <div class="sb-status-dot" style="background:${statusColor}"></div>
       </div>
-      <div class="sb-daytypes">${pills}</div>
+      <div class="sb-daytypes">${pills}${diffBadge}</div>
       ${notesLine}
     </div>`;
   }).join('');
@@ -1101,6 +1321,9 @@ async function renderChartPanel(id) {
     hasDict
       ? `<span class="info-chip ok">✓ Dictionary</span>`
       : `<span class="info-chip miss">? No dictionary</span>`,
+    s.synchroPlans
+      ? `<span class="info-chip ok">✓ Synchro INTID ${s.seq}</span>`
+      : (G.synchroLoaded ? `<span class="info-chip miss">No Synchro match</span>` : ''),
   ].filter(Boolean).join('');
 
   // Day type tabs
@@ -1154,6 +1377,11 @@ async function renderChartPanel(id) {
 
   // View mode disabled if no dict
   const vmDisabled = !hasDict ? 'disabled title="Upload a dictionary to enable approach view"' : '';
+  const isSynchroMode = G.displayMode === 'vsSynchro';
+  // Reset to average if synchro mode but no synchro data
+  if (isSynchroMode && !s.synchroPlans) G.displayMode = 'average';
+  const showChips = !isSynchroMode;
+  const showAgg   = !isSynchroMode && G.displayMode !== 'individual';
 
   panel.innerHTML = `
     <div class="info-strip">${infoChips}</div>
@@ -1161,7 +1389,7 @@ async function renderChartPanel(id) {
     <div class="ctrl-row">
       <div class="ctrl-group">
         <div class="ctrl-label">View</div>
-        <select class="ctrl-select" id="viewSel" onchange="switchViewMode(this.value)" ${vmDisabled}>
+        <select class="ctrl-select" id="viewSel" onchange="switchViewMode(this.value)" ${vmDisabled}${isSynchroMode?' disabled':''}>
           <option value="approach"${G.viewMode==='approach'?' selected':''}>By Approach</option>
           <option value="detector"${G.viewMode==='detector'?' selected':''}>By Detector</option>
         </select>
@@ -1171,18 +1399,19 @@ async function renderChartPanel(id) {
         <select class="ctrl-select" id="dispSel" onchange="switchDisplayMode(this.value)">
           <option value="average"${G.displayMode==='average'?' selected':''}>Averaged Profile</option>
           <option value="individual"${G.displayMode==='individual'?' selected':''}>Individual Date</option>
+          ${s.synchroPlans ? `<option value="vsSynchro"${G.displayMode==='vsSynchro'?' selected':''}>vs Synchro Baseline</option>` : ''}
         </select>
       </div>
-      ${dateSel}
-      <div class="ctrl-group">
+      ${!isSynchroMode ? dateSel : ''}
+      ${showAgg ? `<div class="ctrl-group">
         <div class="ctrl-label">Aggregation</div>
         <select class="ctrl-select" id="aggSel" onchange="G.aggregation=this.value;updateChart()">
           <option value="15min"${G.aggregation==='15min'?' selected':''}>15-Minute</option>
           <option value="hourly"${G.aggregation==='hourly'?' selected':''}>Hourly</option>
         </select>
-      </div>
+      </div>` : ''}
     </div>
-    <div class="chip-row" id="chipRow">${chipHtml}</div>
+    ${showChips ? `<div class="chip-row" id="chipRow">${chipHtml}</div>` : ''}
     <div id="adjBanner"></div>
     <div class="chart-wrap">
       <canvas id="mainChart"></canvas>
@@ -1221,6 +1450,46 @@ function renderAdjBanner(s) {
 // CHART UPDATE
 // ══════════════════════════════════════════════════════════════════════════
 
+function renderSynchroBarChart(s, ctx) {
+  if (G.chart) { G.chart.destroy(); G.chart = null; }
+  const effDay = (G.dayTab === 'all') ? 'weekday' : G.dayTab;
+  const peaks  = computePeaks(s, effDay);
+  const synAM  = getSynchroBaseline(s, effDay, 'AM');
+  const synPM  = getSynchroBaseline(s, effDay, 'PM');
+  const planAMName = effDay === 'weekday' ? 'AM' : 'WE_AM';
+  const planPMName = effDay === 'weekday' ? 'PM' : 'WE_PM';
+  const dayLabel = effDay.charAt(0).toUpperCase() + effDay.slice(1);
+
+  G.chart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: CORE_MOVEMENTS,
+      datasets: [
+        { label: 'New AM',      data: CORE_MOVEMENTS.map(m => peaks[m]?.am ?? 0), backgroundColor: '#2563eb', barPercentage: 0.8, categoryPercentage: 0.9 },
+        { label: 'Synchro AM', data: CORE_MOVEMENTS.map(m => synAM?.[m] ?? 0),  backgroundColor: '#93c5fd', barPercentage: 0.8, categoryPercentage: 0.9 },
+        { label: 'New PM',      data: CORE_MOVEMENTS.map(m => peaks[m]?.pm ?? 0), backgroundColor: '#dc2626', barPercentage: 0.8, categoryPercentage: 0.9 },
+        { label: 'Synchro PM', data: CORE_MOVEMENTS.map(m => synPM?.[m] ?? 0),  backgroundColor: '#fca5a5', barPercentage: 0.8, categoryPercentage: 0.9 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: { duration: 150 },
+      plugins: {
+        title: {
+          display: true,
+          text: [`${s.kitsId} · ${dayLabel} · New vs Synchro`, `AM baseline: ${planAMName} · PM baseline: ${planPMName}`],
+          font: { size: 12 },
+        },
+        legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } },
+        tooltip: { mode: 'index', intersect: false },
+      },
+      scales: {
+        y: { beginAtZero: true, ticks: { font: { size: 11 } } },
+        x: { ticks: { font: { size: 11 } } },
+      },
+    },
+  });
+}
+
 function updateChart() {
   const id = currentId();
   if (!id) return;
@@ -1229,6 +1498,11 @@ function updateChart() {
 
   const ctx = document.getElementById('mainChart');
   if (!ctx) return;
+
+  if (G.displayMode === 'vsSynchro' && s.synchroPlans) {
+    renderSynchroBarChart(s, ctx);
+    return;
+  }
 
   if (G.chart) { G.chart.destroy(); G.chart = null; }
 
@@ -1348,6 +1622,23 @@ function buildDatasets(s) {
 
 function renderNotesPanel(id) {
   const s = G.intersections[id];
+
+  // Synchro comparison section
+  const synSec = document.getElementById('synchroSection');
+  const synWrap = document.getElementById('synchroTableWrap');
+  if (synSec && synWrap) {
+    if (s.synchroPlans || G.synchroLoaded) {
+      synSec.style.display = '';
+      const effDay = (G.dayTab === 'all') ? 'weekday' : G.dayTab;
+      if (s.synchroPlans) {
+        synWrap.innerHTML = _synchroSectionOpen ? renderSynchroCompTable(s, effDay) : '';
+      } else {
+        synWrap.innerHTML = `<div style="font-size:11px;color:var(--muted);padding:6px 0">No Synchro baseline matched for INTID ${s.seq}</div>`;
+      }
+    } else {
+      synSec.style.display = 'none';
+    }
+  }
 
   // Detector chips
   const qcMap = s.loaded ? computeDetQC(s) : {};
@@ -1520,6 +1811,35 @@ function exportCurPeaks() {
     const ws = XLSX.utils.json_to_sheet(peakSheetData(s, dt, id), { skipHeader:true });
     XLSX.utils.book_append_sheet(wb, ws, label);
   }
+  // Comparison sheet (if synchro loaded)
+  if (s.synchroPlans) {
+    const compRows = [];
+    for (const [dt, dtLabel] of [['weekday','Weekday'],['saturday','Saturday'],['sunday','Sunday']]) {
+      if (!hasDayType(s, dt)) continue;
+      const peaks = computePeaks(s, dt);
+      const synAM = getSynchroBaseline(s, dt, 'AM');
+      const synPM = getSynchroBaseline(s, dt, 'PM');
+      const planAM = dt === 'weekday' ? 'AM' : 'WE_AM';
+      const planPM = dt === 'weekday' ? 'PM' : 'WE_PM';
+      compRows.push({ Movement: `--- ${dtLabel} (AM: ${planAM}, PM: ${planPM}) ---` });
+      for (const mov of CORE_MOVEMENTS) {
+        const nAM = peaks[mov]?.am ?? 0, nPM = peaks[mov]?.pm ?? 0;
+        const sAM = synAM?.[mov] ?? 0, sPM = synPM?.[mov] ?? 0;
+        compRows.push({
+          Movement: mov,
+          New_AM: nAM, Synchro_AM: sAM,
+          Diff_AM: nAM - sAM,
+          PctDiff_AM: sAM > 0 ? parseFloat(((nAM - sAM) / sAM * 100).toFixed(1)) : null,
+          New_PM: nPM, Synchro_PM: sPM,
+          Diff_PM: nPM - sPM,
+          PctDiff_PM: sPM > 0 ? parseFloat(((nPM - sPM) / sPM * 100).toFixed(1)) : null,
+        });
+      }
+    }
+    if (compRows.length) {
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(compRows), 'Comparison');
+    }
+  }
   XLSX.writeFile(wb, `${id}_peaks.xlsx`);
 }
 
@@ -1563,6 +1883,27 @@ function exportAllNotes() {
       Excluded_Detectors: [...s.excludedDets].join(', '),
       Excluded_Dates: [...s.excludedDates].join(', '),
       Dictionary: (s.dictFile || s.serverHasDict) ? 'Yes' : 'No',
+      Synchro_Matched: s.synchroPlans ? 'Yes' : 'No',
+      Weekday_AM_MaxPctDiff: (() => {
+        if (!s.synchroPlans || !s.loaded) return '';
+        const synAM = s.synchroPlans.AM;
+        if (!synAM) return '';
+        const peaks = computePeaks(s, 'weekday');
+        let max = 0;
+        for (const m of CORE_MOVEMENTS)
+          if (synAM[m] > 0) max = Math.max(max, Math.abs((peaks[m]?.am||0) - synAM[m]) / synAM[m] * 100);
+        return parseFloat(max.toFixed(1));
+      })(),
+      Weekday_PM_MaxPctDiff: (() => {
+        if (!s.synchroPlans || !s.loaded) return '';
+        const synPM = s.synchroPlans.PM;
+        if (!synPM) return '';
+        const peaks = computePeaks(s, 'weekday');
+        let max = 0;
+        for (const m of CORE_MOVEMENTS)
+          if (synPM[m] > 0) max = Math.max(max, Math.abs((peaks[m]?.pm||0) - synPM[m]) / synPM[m] * 100);
+        return parseFloat(max.toFixed(1));
+      })(),
       Notes: s.notes,
     };
   });
@@ -1582,16 +1923,40 @@ async function exportAllPeaks() {
     }
   }
 
+  const hasSyn = G.synchroLoaded;
   const wb = XLSX.utils.book_new();
   for (const [dt, label] of [['weekday','Weekday'],['saturday','Saturday'],['sunday','Sunday']]) {
     const allRows = [];
-    const header = { Plan:'Plan', Approach:'Approach', ...Object.fromEntries(MOVEMENTS.map(m=>[m,m])), Sum:'Sum' };
+    const synCols = hasSyn ? [
+      ...CORE_MOVEMENTS.map(m => `Syn_AM_${m}`),
+      ...CORE_MOVEMENTS.map(m => `Syn_PM_${m}`),
+      ...CORE_MOVEMENTS.map(m => `PctDiff_AM_${m}`),
+      ...CORE_MOVEMENTS.map(m => `PctDiff_PM_${m}`),
+    ] : [];
+    const header = {
+      Plan:'Plan', Approach:'Approach',
+      ...Object.fromEntries(MOVEMENTS.map(m=>[m,m])),
+      Sum:'Sum',
+      ...Object.fromEntries(synCols.map(c=>[c,c])),
+    };
     allRows.push(header);
     for (const id of G.sortedIds) {
       const s = G.intersections[id];
       if (!s.loaded || !hasDayType(s, dt)) continue;
       const peaks = computePeaks(s, dt);
       const [am, pm] = peakRowsForExport(peaks, id);
+      if (hasSyn && s.synchroPlans) {
+        const synAM = getSynchroBaseline(s, dt, 'AM');
+        const synPM = getSynchroBaseline(s, dt, 'PM');
+        for (const m of CORE_MOVEMENTS) {
+          am[`Syn_AM_${m}`] = synAM?.[m] ?? '';
+          pm[`Syn_PM_${m}`] = synPM?.[m] ?? '';
+          const nAM = peaks[m]?.am ?? 0, sAM = synAM?.[m] ?? 0;
+          const nPM = peaks[m]?.pm ?? 0, sPM = synPM?.[m] ?? 0;
+          am[`PctDiff_AM_${m}`] = sAM > 0 ? parseFloat(((nAM-sAM)/sAM*100).toFixed(1)) : '';
+          pm[`PctDiff_PM_${m}`] = sPM > 0 ? parseFloat(((nPM-sPM)/sPM*100).toFixed(1)) : '';
+        }
+      }
       allRows.push(am, {Plan:'',Approach:'',Sum:''}, pm, {Plan:'',Approach:'',Sum:''});
     }
     if (allRows.length > 1) {
@@ -1737,6 +2102,8 @@ async function startServerApp() {
     G.intersections[a].seq - G.intersections[b].seq
   );
 
+  if (G.synchroLoaded) attachSynchroToIntersections();
+
   document.getElementById('uploadScreen').style.display = 'none';
   document.getElementById('appScreen').classList.add('visible');
   renderSidebar();
@@ -1804,6 +2171,7 @@ function resetApp() {
   G.intersections = {}; G.sortedIds = []; G.currentIdx = -1;
   G.rawVolFiles = {}; G.rawDictFiles = {};
   G.serverMode = false; G.serverUrl = ''; G.projectId = '';
+  G.synchroByIntid = {}; G.synchroLoaded = false;
   clearTimeout(G.saveTimer); G.saveTimer = null;
   document.getElementById('appScreen').classList.remove('visible');
   document.getElementById('uploadScreen').style.display = '';
@@ -1815,6 +2183,9 @@ function resetApp() {
   document.getElementById('startBtn').disabled = true;
   document.getElementById('volInput').value = '';
   document.getElementById('dictInput').value = '';
+  document.getElementById('synchroInput').value = '';
+  document.getElementById('synchroPanel').classList.remove('loaded');
+  document.getElementById('synchroStatus').textContent = '';
   switchUploadMode('local');
 }
 </script>
