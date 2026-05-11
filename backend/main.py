@@ -11,8 +11,10 @@ import pandas as pd
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from backend.projects import router as projects_router
 from qc_engine.detector_checks import run_checks_for_all_detectors
 from qc_engine.volume_averaging import average_approach_volumes, network_average_volumes
 from qc_engine.synchro_export import (
@@ -38,6 +40,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(projects_router)
+
+_tools_dir = os.path.join(os.path.dirname(__file__), "..", "tools")
+if os.path.isdir(_tools_dir):
+    app.mount("/tools", StaticFiles(directory=_tools_dir), name="tools")
 
 
 # ---------------------------------------------------------------------------

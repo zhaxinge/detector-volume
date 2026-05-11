@@ -172,6 +172,14 @@ input[type=file]{display:none;}
 /* empty state */
 .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--muted);gap:10px;text-align:center;}
 .empty-icon{font-size:40px;}
+
+/* ── Upload mode tabs ────────────────────────────────────────────────────── */
+.up-mode-tabs{display:flex;margin-bottom:20px;border:1.5px solid var(--border2);border-radius:8px;overflow:hidden;}
+.up-mode-tab{flex:1;background:var(--faint);color:var(--muted);border:none;padding:10px 0;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;transition:all .15s;}
+.up-mode-tab.active{background:var(--wd);color:#fff;}
+.up-server-row{display:flex;align-items:center;gap:10px;width:100%;margin-bottom:0;}
+.up-server-row label{font-size:13px;font-weight:600;white-space:nowrap;color:var(--text);}
+.up-server-input{flex:1;padding:7px 10px;border:1.5px solid var(--border2);border-radius:6px;font-size:14px;font-family:inherit;}
 </style>
 </head>
 <body>
@@ -182,6 +190,12 @@ input[type=file]{display:none;}
   <div class="up-title">🚦 Bulk Traffic Volume Review</div>
   <div class="up-sub">Day-type analysis (Weekday / Saturday / Sunday) · multi-intersection</div>
 
+  <div class="up-mode-tabs">
+    <button id="modeTabLocal" class="up-mode-tab active" onclick="switchUploadMode('local')">📁 Local Files</button>
+    <button id="modeTabServer" class="up-mode-tab" onclick="switchUploadMode('server')">☁️ Server Mode</button>
+  </div>
+
+<div id="localModePanel">
   <div class="up-tree">
 <span>Rt.50W/</span>                 ← select this top-level folder<br>
 &nbsp;&nbsp;<span>74_929608025/</span>        ← {seq}_{KITS_ID}<br>
@@ -221,8 +235,51 @@ input[type=file]{display:none;}
 
   <div class="up-preview" id="matchPreview"></div>
   <button class="btn" id="startBtn" disabled onclick="startApp()">Match &amp; Start Review →</button>
-</div>
-</div>
+</div><!-- end localModePanel -->
+
+<div id="serverModePanel" style="display:none">
+  <div class="up-opts" style="flex-direction:column;align-items:flex-start;gap:14px;">
+    <div class="up-server-row">
+      <label>Server URL:</label>
+      <input type="text" id="serverUrl" class="up-server-input"
+        placeholder="http://localhost:8000  (leave blank for same origin)"/>
+      <button class="btn btn-sm" onclick="connectToServer()">Connect</button>
+    </div>
+    <div id="serverConnectStatus" style="font-size:13px;color:var(--muted);min-height:18px"></div>
+  </div>
+
+  <div id="serverProjects" style="display:none">
+    <div class="up-opts" style="flex-direction:column;align-items:flex-start;gap:14px;">
+      <div class="up-server-row">
+        <label>Project:</label>
+        <select id="projectSel" class="up-server-input" style="flex:1">
+          <option value="">Select a project…</option>
+        </select>
+      </div>
+      <div class="up-server-row">
+        <label>New project:</label>
+        <input type="text" id="newProjectName" class="up-server-input" style="max-width:220px"
+          placeholder="Project name…"/>
+        <button class="btn btn-sm btn-ghost" onclick="createProject()">Create</button>
+      </div>
+      <div class="up-server-row">
+        <label>Survey Year:</label>
+        <input type="number" id="yearInputServer" value="2026" min="2000" max="2099"
+          style="width:80px;padding:6px 10px;border:1.5px solid var(--border2);border-radius:6px;font-size:14px;font-family:inherit"/>
+        <span style="font-size:13px;color:var(--muted)">Used to classify weekday/Saturday/Sunday.</span>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-sm btn-ghost" onclick="document.getElementById('zipInput').click()">📤 Upload ZIP</button>
+        <input type="file" id="zipInput" accept=".zip" style="display:none" onchange="doZipUpload(this)"/>
+        <button class="btn" onclick="startServerApp()">Open Project →</button>
+      </div>
+      <div id="uploadStatus" style="font-size:13px;color:var(--muted);min-height:18px"></div>
+    </div>
+  </div>
+</div><!-- end serverModePanel -->
+
+</div><!-- end up-card -->
+</div><!-- end uploadScreen -->
 
 <!-- ═══════════════════════════════════════ MAIN APP ═══════ -->
 <div id="appScreen">
@@ -339,6 +396,11 @@ const G = {
   displayMode: 'average',
   aggregation: '15min',
   selectedDate: null,
+  // server mode
+  serverMode: false,
+  serverUrl: '',
+  projectId: '',
+  saveTimer: null,
 };
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -411,8 +473,10 @@ function readFileAsBuffer(file) {
   });
 }
 
-async function readSheetJson(file) {
-  const buf = await readFileAsBuffer(file);
+async function readSheetJson(fileOrBuffer) {
+  const buf = fileOrBuffer instanceof ArrayBuffer
+    ? fileOrBuffer
+    : await readFileAsBuffer(fileOrBuffer);
   const wb = XLSX.read(buf, { type: 'array', cellDates: false });
   const ws = wb.Sheets[wb.SheetNames[0]];
   return XLSX.utils.sheet_to_json(ws, { defval: '' });
@@ -823,27 +887,50 @@ async function loadIntersection(id) {
   if (s.loaded || s.loading) return;
   s.loading = true;
 
-  // Parse dictionary first (fast)
-  if (s.dictFile) {
-    try {
-      const rows = await readSheetJson(s.dictFile);
-      const parsed = parseDictionary(rows);
-      if (parsed) { s.detDict = parsed.detDict; s.phaseDict = parsed.phaseDict; }
-    } catch(e) { console.warn('Dict parse error', e); }
-  }
-
-  // Parse each volume file
-  s.processedData = {};
-  for (const f of s.files) {
-    const dateKey = extractDateFromFilename(f.name);
-    if (!dateKey) continue;
-    try {
-      const rows = await readSheetJson(f);
-      const rawRows = parseVolumeRows(rows);
-      const gran = detectGranularity(rawRows);
-      const data = groupTo15Min(rawRows, gran);
-      s.processedData[dateKey] = { data, granularity: gran };
-    } catch(e) { console.warn(`Error parsing ${f.name}:`, e); }
+  if (s.serverMode) {
+    // Server mode: fetch files from API
+    if (s.serverDictFile) {
+      try {
+        const buf = await fetchFileBufferFromServer(s.kitsId, s.serverDictFile);
+        const rows = await readSheetJson(buf);
+        const parsed = parseDictionary(rows);
+        if (parsed) { s.detDict = parsed.detDict; s.phaseDict = parsed.phaseDict; }
+      } catch(e) { console.warn('Dict fetch error', e); }
+    }
+    s.processedData = {};
+    for (const fname of s.serverFiles.filter(f => !f.includes('_dict'))) {
+      const dateKey = extractDateFromFilename(fname);
+      if (!dateKey) continue;
+      try {
+        const buf = await fetchFileBufferFromServer(s.kitsId, fname);
+        const rows = await readSheetJson(buf);
+        const rawRows = parseVolumeRows(rows);
+        const gran = detectGranularity(rawRows);
+        const data = groupTo15Min(rawRows, gran);
+        s.processedData[dateKey] = { data, granularity: gran };
+      } catch(e) { console.warn(`Error fetching ${fname}:`, e); }
+    }
+  } else {
+    // Local mode: read from File objects
+    if (s.dictFile) {
+      try {
+        const rows = await readSheetJson(s.dictFile);
+        const parsed = parseDictionary(rows);
+        if (parsed) { s.detDict = parsed.detDict; s.phaseDict = parsed.phaseDict; }
+      } catch(e) { console.warn('Dict parse error', e); }
+    }
+    s.processedData = {};
+    for (const f of s.files) {
+      const dateKey = extractDateFromFilename(f.name);
+      if (!dateKey) continue;
+      try {
+        const rows = await readSheetJson(f);
+        const rawRows = parseVolumeRows(rows);
+        const gran = detectGranularity(rawRows);
+        const data = groupTo15Min(rawRows, gran);
+        s.processedData[dateKey] = { data, granularity: gran };
+      } catch(e) { console.warn(`Error parsing ${f.name}:`, e); }
+    }
   }
 
   s.loaded = true;
@@ -932,7 +1019,8 @@ function renderSidebar() {
       dtCounts.sunday   ? `<span class="sb-dt-pill" style="background:${DAY_BG.sunday};color:${DAY_COLORS.sunday}">${dtCounts.sunday}Su</span>` : '',
     ].filter(Boolean).join('');
     const notesLine = s.notes ? `<div class="sb-notes">${esc(s.notes.split('\n')[0])}</div>` : '';
-    const dictIcon = s.dictFile ? '' : '<span style="color:#f59e0b;font-size:10px;margin-left:2px">?</span>';
+    const hasDict = s.dictFile || s.serverHasDict;
+    const dictIcon = hasDict ? '' : '<span style="color:#f59e0b;font-size:10px;margin-left:2px">?</span>';
     return `<div class="sb-item${id===curId?' active':''}" onclick="selectFromSidebar('${id}')">
       <div class="sb-item-row1">
         <span class="sb-seq">#${s.seq}</span>
@@ -1368,6 +1456,7 @@ function toggleExcludeDet(det) {
   renderNotesPanel(currentId());
   renderAdjBanner(s);
   updateChart();
+  scheduleSave(s.kitsId);
 }
 
 function toggleExcludeDate(date) {
@@ -1377,6 +1466,7 @@ function toggleExcludeDate(date) {
   else s.excludedDates.add(date);
   renderNotesPanel(currentId());
   updateChart();
+  scheduleSave(s.kitsId);
 }
 
 function setStatus(status) {
@@ -1386,6 +1476,7 @@ function setStatus(status) {
   renderNotesPanel(currentId());
   renderTopBar(currentId());
   renderSidebar();
+  scheduleSave(s.kitsId);
 }
 
 function saveNotes() {
@@ -1393,6 +1484,7 @@ function saveNotes() {
   if (s) {
     s.notes = document.getElementById('notesTextarea').value;
     renderSidebar();
+    scheduleSave(s.kitsId);
   }
 }
 
@@ -1470,7 +1562,7 @@ function exportAllNotes() {
       Detectors: allDets.join(', '),
       Excluded_Detectors: [...s.excludedDets].join(', '),
       Excluded_Dates: [...s.excludedDates].join(', '),
-      Dictionary: s.dictFile ? 'Yes' : 'No',
+      Dictionary: (s.dictFile || s.serverHasDict) ? 'Yes' : 'No',
       Notes: s.notes,
     };
   });
@@ -1511,6 +1603,178 @@ async function exportAllPeaks() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+// SERVER MODE
+// ══════════════════════════════════════════════════════════════════════════
+
+function switchUploadMode(mode) {
+  const isServer = mode === 'server';
+  document.getElementById('localModePanel').style.display = isServer ? 'none' : '';
+  document.getElementById('serverModePanel').style.display = isServer ? '' : 'none';
+  document.getElementById('modeTabLocal').classList.toggle('active', !isServer);
+  document.getElementById('modeTabServer').classList.toggle('active', isServer);
+}
+
+async function connectToServer() {
+  const url = (document.getElementById('serverUrl').value.trim() || window.location.origin);
+  const statusEl = document.getElementById('serverConnectStatus');
+  try {
+    const res = await fetch(`${url}/api/projects`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const projects = await res.json();
+    const sel = document.getElementById('projectSel');
+    sel.innerHTML = '<option value="">Select a project…</option>' +
+      projects.map(p => `<option value="${p.id}">${esc(p.name)} (${p.id})</option>`).join('');
+    document.getElementById('serverProjects').style.display = '';
+    statusEl.textContent = `✓ Connected · ${projects.length} project(s)`;
+    statusEl.style.color = 'var(--ok)';
+  } catch(e) {
+    statusEl.textContent = `✕ ${e.message}`;
+    statusEl.style.color = 'var(--issue)';
+  }
+}
+
+async function createProject() {
+  const url = document.getElementById('serverUrl').value.trim() || window.location.origin;
+  const name = document.getElementById('newProjectName').value.trim();
+  if (!name) { alert('Enter a project name.'); return; }
+  try {
+    const fd = new FormData();
+    fd.append('name', name);
+    const res = await fetch(`${url}/api/projects`, { method: 'POST', body: fd });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    document.getElementById('newProjectName').value = '';
+    await connectToServer();
+  } catch(e) {
+    alert(`Create failed: ${e.message}`);
+  }
+}
+
+async function doZipUpload(input) {
+  if (!input.files.length) return;
+  const url = document.getElementById('serverUrl').value.trim() || window.location.origin;
+  const pid = document.getElementById('projectSel').value;
+  const year = parseInt(document.getElementById('yearInputServer').value) || 2026;
+  if (!pid) { alert('Select a project first.'); return; }
+  const statusEl = document.getElementById('uploadStatus');
+  statusEl.textContent = 'Uploading…';
+  statusEl.style.color = 'var(--muted)';
+  try {
+    const fd = new FormData();
+    fd.append('zip_file', input.files[0]);
+    fd.append('year', String(year));
+    const res = await fetch(`${url}/api/projects/${pid}/upload`, { method: 'POST', body: fd });
+    if (!res.ok) { const t = await res.text(); throw new Error(`HTTP ${res.status}: ${t}`); }
+    const data = await res.json();
+    statusEl.textContent = `✓ Uploaded ${data.uploaded} intersection(s) to project`;
+    statusEl.style.color = 'var(--ok)';
+  } catch(e) {
+    statusEl.textContent = `✕ ${e.message}`;
+    statusEl.style.color = 'var(--issue)';
+  }
+  input.value = '';
+}
+
+async function startServerApp() {
+  const url = document.getElementById('serverUrl').value.trim() || window.location.origin;
+  const pid = document.getElementById('projectSel').value;
+  if (!pid) { alert('Select a project first.'); return; }
+  G.serverMode = true;
+  G.serverUrl = url;
+  G.projectId = pid;
+  G.year = parseInt(document.getElementById('yearInputServer').value) || 2026;
+
+  let intersections, allStates;
+  try {
+    const [intRes, statesRes] = await Promise.all([
+      fetch(`${url}/api/projects/${pid}/intersections`),
+      fetch(`${url}/api/projects/${pid}/states`),
+    ]);
+    if (!intRes.ok) throw new Error(`HTTP ${intRes.status}`);
+    intersections = await intRes.json();
+    allStates = statesRes.ok ? await statesRes.json() : {};
+  } catch(e) {
+    alert(`Failed to load project: ${e.message}`);
+    G.serverMode = false;
+    return;
+  }
+
+  G.intersections = {};
+  for (const int of intersections) {
+    const folderId = int.folder;
+    const volFiles = int.files.filter(f => !f.includes('_dict'));
+    const dictFname = int.files.find(f => f.includes('_dict')) || null;
+    const dateMap = {};
+    for (const f of volFiles) {
+      const d = extractDateFromFilename(f);
+      if (d) dateMap[d] = getDayType(d, G.year);
+    }
+    const saved = allStates[int.kits_id] || {};
+    G.intersections[folderId] = {
+      id: folderId,
+      seq: int.seq,
+      kitsId: int.kits_id,
+      files: [],
+      dictFile: null,
+      serverMode: true,
+      serverFiles: int.files,
+      serverHasDict: !!dictFname,
+      serverDictFile: dictFname,
+      dateTypes: dateMap,
+      processedData: null,
+      detDict: null,
+      phaseDict: null,
+      excludedDates: new Set(saved.excludedDates || []),
+      excludedDets: new Set(saved.excludedDets || []),
+      selectedItems: null,
+      status: saved.status || 'unreviewed',
+      notes: saved.notes || '',
+      loaded: false,
+      loading: false,
+    };
+  }
+
+  G.sortedIds = Object.keys(G.intersections).sort((a, b) =>
+    G.intersections[a].seq - G.intersections[b].seq
+  );
+
+  document.getElementById('uploadScreen').style.display = 'none';
+  document.getElementById('appScreen').classList.add('visible');
+  renderSidebar();
+  selectIntersection(0);
+}
+
+async function fetchFileBufferFromServer(kitsId, filename) {
+  const url = `${G.serverUrl}/api/projects/${G.projectId}/intersections/${kitsId}/files/${encodeURIComponent(filename)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${filename}`);
+  return res.arrayBuffer();
+}
+
+function scheduleSave(kitsId) {
+  if (!G.serverMode) return;
+  clearTimeout(G.saveTimer);
+  G.saveTimer = setTimeout(() => saveStateToServer(kitsId), 1000);
+}
+
+async function saveStateToServer(kitsId) {
+  const folderId = G.sortedIds.find(id => G.intersections[id].kitsId === kitsId);
+  const s = folderId ? G.intersections[folderId] : null;
+  if (!s) return;
+  const state = {
+    status: s.status,
+    notes: s.notes,
+    excludedDets: [...s.excludedDets],
+    excludedDates: [...s.excludedDates],
+  };
+  try {
+    await fetch(
+      `${G.serverUrl}/api/projects/${G.projectId}/intersections/${kitsId}/state`,
+      { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state) }
+    );
+  } catch(e) { console.warn('Auto-save failed:', e); }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // KEYBOARD SHORTCUTS
 // ══════════════════════════════════════════════════════════════════════════
 
@@ -1539,6 +1803,8 @@ function resetApp() {
   if (G.chart) { G.chart.destroy(); G.chart = null; }
   G.intersections = {}; G.sortedIds = []; G.currentIdx = -1;
   G.rawVolFiles = {}; G.rawDictFiles = {};
+  G.serverMode = false; G.serverUrl = ''; G.projectId = '';
+  clearTimeout(G.saveTimer); G.saveTimer = null;
   document.getElementById('appScreen').classList.remove('visible');
   document.getElementById('uploadScreen').style.display = '';
   document.getElementById('volPanel').classList.remove('loaded');
@@ -1549,6 +1815,7 @@ function resetApp() {
   document.getElementById('startBtn').disabled = true;
   document.getElementById('volInput').value = '';
   document.getElementById('dictInput').value = '';
+  switchUploadMode('local');
 }
 </script>
 </body>
